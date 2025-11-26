@@ -76,10 +76,10 @@ export default function App() {
     try {
       const requestData = {
         session_id: userName,
-        message: userMessage,
+        message: userMessage, // <--- CORREÇÃO: Mudar 'query' para 'message'
       };
 
-      const response = await fetch("http://127.0.0.1:8000/chat/", {
+      const response = await fetch("http://127.0.0.1:8000/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestData),
@@ -91,11 +91,11 @@ export default function App() {
       addMessage(data.response, "bot");
     } catch (error) {
       console.error(error);
-      addMessage("❌ Erro ao conectar ao servidor.", "bot");
+      addMessage("Erro ao conectar ao servidor.", "bot");
     } finally {
       setIsLoading(false);
     }
-  };
+};
 
   const handleKeyPress = (e) => {
     if (e.key === "Enter") handleSendMessage();

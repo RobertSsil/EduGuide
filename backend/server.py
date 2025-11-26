@@ -6,12 +6,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
-from pypdf import PdfReader
+# Usando PyMuPDF (fitz) é mais comum, mas pypdf também funciona
+from pypdf import PdfReader 
 
 # ---------------------------------------------------------
 # CONFIGURAÇÃO INICIAL
 # ---------------------------------------------------------
 
+# CERTIFIQUE-SE QUE SUA CHAVE NO .env É VÁLIDA E NOVA!
 load_dotenv()
 client = genai.Client()
 
@@ -37,7 +39,9 @@ def load_and_process_pdf(path: str):
 
     for page in reader.pages:
         extracted = page.extract_text() or ""
-        text += extracted + "\n"
+        # Limita o tamanho do chunk para evitar falha no embedding se for muito grande
+        # Mantendo o split por linha, mas você pode querer uma função de chunking mais robusta
+        text += extracted + "\n" 
 
     chunks = [line.strip() for line in text.split("\n") if line.strip()]
 
@@ -69,7 +73,6 @@ def create_and_store_embeddings():
                     contents=batch
                 )
 
-                # o novo formato é: response.embeddings[x].values
                 for emb in response.embeddings:
                     all_embeddings.append(emb.values)
 
@@ -80,6 +83,7 @@ def create_and_store_embeddings():
                 time.sleep(1)
 
                 if attempt == RETRIES - 1:
+                    # Se falhar todas as vezes, preenche com vetores zero (abordagem de falha segura)
                     dummy = [0.0] * 768
                     all_embeddings.extend([dummy] * len(batch))
 
@@ -88,33 +92,43 @@ def create_and_store_embeddings():
 
 
 # ---------------------------------------------------------
-# BUSCA DE CONTEXTO
+# BUSCA DE CONTEXTO (RAG)
 # ---------------------------------------------------------
 
-def find_relevant_chunks(query: str, top_k: int = 3):
-    if document_embeddings is None:
-        return "Banco de embeddings não carregado."
-
+def embed_query(query: str):
+    """Função auxiliar para embeddar a query, separada para melhor tratamento de erros."""
     try:
         q = client.models.embed_content(
             model="text-embedding-004",
             contents=query
         )
+        return np.array(q.embeddings[0].values)
+    except Exception as e:
+        print("Erro ao gerar embedding da pergunta:", e)
+        return None
 
-        query_vector = np.array(q.embeddings[0].values)
 
-    except Exception:
-        return "Erro ao gerar embedding da pergunta."
+def find_relevant_chunks(query: str, top_k: int = 3):
+    if document_embeddings is None:
+        return "Banco de embeddings não carregado."
 
+    query_vector = embed_query(query)
+    
+    if query_vector is None:
+        return "Erro ao gerar embedding da pergunta. Não é possível buscar contexto."
+
+    # Calcula a similaridade (dot product)
     scores = np.dot(document_embeddings, query_vector)
 
+    # Pega os índices dos top_k chunks mais relevantes
     top_idx = np.argsort(scores)[-top_k:][::-1]
 
+    # Retorna os chunks formatados
     return "\n---\n".join([document_chunks[i] for i in top_idx])
 
 
 # ---------------------------------------------------------
-# FASTAPI
+# FASTAPI ENDPOINT
 # ---------------------------------------------------------
 
 app = FastAPI()
@@ -128,7 +142,6 @@ app.add_middleware(
 )
 
 
-# modelo compatível COM O SEU FRONTEND
 class ChatQuery(BaseModel):
     session_id: str
     message: str
@@ -138,11 +151,16 @@ class ChatQuery(BaseModel):
 def chat_with_gemini(data: ChatQuery):
     user_msg = data.message
 
+    # 1. Busca de contexto (RAG)
     context = find_relevant_chunks(user_msg)
-
+    
+    # 2. Instrução do Sistema (Corrigida para humanizar a resposta)
     system_instruction = (
-        "Você é um assistente acadêmico da UERN. "
-        "Responda somente com base no CONTEXTO fornecido."
+        "Você é um assistente acadêmico e prestativo da UERN. "
+        "Use o CONTEXTO fornecido abaixo APENAS para responder a perguntas acadêmicas específicas. "
+        "Se a pergunta for social (como 'Oi', 'Olá') ou não tiver relação com o contexto acadêmico, "
+        "responda de forma educada, amigável e natural, sem fazer referência ao contexto ou ao PDF. "
+        "Responda de forma concisa e direta."
     )
 
     full_prompt = (
@@ -162,6 +180,7 @@ def chat_with_gemini(data: ChatQuery):
         return {"response": response.text}
 
     except Exception as e:
+        # Erros da API do Gemini serão tratados aqui, incluindo o 403 (se a chave não for trocada)
         return {"response": f"Erro ao gerar resposta: {str(e)}"}
 
 
